@@ -2,12 +2,55 @@
 #undef int
 #include <stdio.h>
 
+#define TEST_avr_ATmega168_pin_Mapping
+#ifdef TEST_avr_ATmega168_pin_Mapping
+#else
+#endif
+
+
+#ifdef TEST_avr_ATmega168_pin_Mapping
+/* ATmega168_pin_Mapping
+ *             _____
+ * reset  PC6-|     |-PC5
+ * pin  0 PD0-|     |-PC4
+ * pin  1 PD1-|     |-PC3
+ * pin  2 PD2-|iT   |-PC2
+ * pin  3 PD3-|iT   |-PC1
+ * pin  4 PD4-|iT   |-PC0
+ *        VCC-|     |-GND
+ *        GND-|     |-AREF
+ *        PB6-|     |-AVCC
+ *        PB7-|    O|-PB5    pin 13
+ * pin  5 PD5-|iT   |-PB4    pin 12
+ * pin  6 PD6-|iH   |-PB3    pin 11
+ * pin  7 PD7-|     |-PB2    pin 10
+ * pin  8 PB0-|____O|-PB1    pin  9
+*/
+#define status_LED_DDR DDRB
+#define status_LED_port PORTB
+#define status_LED_Pin 5
+
+#define TOGGLE_IO_port PORTB
+#define TOGGLE_IO_DDR DDRB
+#define TOGGLE_IO 1
+
+#define BUTTON_PIN_port PORTD /* BUTTON_Pin Port */
+#define BUTTON_PIN 6
+#define SENSOR_PIN PIND /* SENSOR Port */
+#define SENSOR_DDR DDRD /* SENSOR DDR */
+#define SENSOR_0_PIN 2      /* SENSOR 0 */
+#define SENSOR_1_PIN 3      /* SENSOR 1 */
+#define SENSOR_2_PIN 4      /* SENSOR 2 */
+#define SENSOR_3_PIN 5      /* SENSOR 3 */
+#else
 #define TOGGLE_IO 9 //Arduino pin to toggle in timer ISR, used for debug
 #define BUTTON_PIN 6
-#define SENSOR_0_PIN 2   //
-#define SENSOR_1_PIN 3   //
-#define SENSOR_2_PIN 4   //
-#define SENSOR_3_PIN 5   //
+#define SENSOR_0_PIN 2   //PIND2
+#define SENSOR_1_PIN 3   //PIND3
+#define SENSOR_2_PIN 4   //PIND4
+#define SENSOR_3_PIN 5   //PIND5
+#endif
+
 #define TICK_PACKET_MAX_SIZE 1
 #define RACE_PACKET_SIZE 55  // buffer allocation for the race packet
 #define RACE_PACKET_UTIL_SIZE 54 // buffer utilization for the race packet (keep this as low as possible to reduce overrun risk)
@@ -108,12 +151,23 @@ void blinkLED() {
   if (num - lastStatusBlinkMillis > statusBlinkInterval) {
     lastStatusBlinkMillis = num;
 
+#ifdef TEST_avr_ATmega168_pin_Mapping
+    if (lastStatusLEDValue == LOW)
+    {
+      lastStatusLEDValue = HIGH;
+      status_LED_port|=(0x01<<status_LED_Pin);
+    } else {
+      lastStatusLEDValue = LOW;
+      status_LED_port&=~(0x01<<status_LED_Pin);
+    }
+#else
     if (lastStatusLEDValue == LOW)
       lastStatusLEDValue = HIGH;
     else
       lastStatusLEDValue = LOW;
 
     digitalWrite(statusLEDPin, lastStatusLEDValue);
+#endif
   }
 
 }
@@ -227,11 +281,25 @@ void SetupTimer2For2Milli(){
 }
 
 void SetupPinChangeLogic(){
-  val0 = digitalRead(SENSOR_0_PIN);
+
+#ifdef TEST_avr_ATmega168_pin_Mapping
+    // Read each of the pins
+    val0=SENSOR_PIN&(0x01<<SENSOR_0_PIN);
+    val1=SENSOR_PIN&(0x01<<SENSOR_1_PIN);
+    val2=SENSOR_PIN&(0x01<<SENSOR_2_PIN);
+    val3=SENSOR_PIN&(0x01<<SENSOR_3_PIN);
+    buttonPinVal=SENSOR_PIN&(0x01<<BUTTON_PIN);
+#else
+    // Read each of the pins
+    // This should really be done in a faster way by reading the port once to minimize ISR execution time
+    // but for whatever reason, the last attempt at doing that didn't work.
+    // So we'll just use the likely non-optimizing calls from the Arduino library
+    val0 = digitalRead(SENSOR_0_PIN);
     val1 = digitalRead(SENSOR_1_PIN);
     val2 = digitalRead(SENSOR_2_PIN);
     val3 = digitalRead(SENSOR_3_PIN);
     buttonPinVal = digitalRead(BUTTON_PIN);
+#endif
     lastSensor0Value = val0;  // now that you've used this value of val#, make sure it's recorded as the standing value...
     lastSensor1Value = val1;
     lastSensor2Value = val2;
@@ -248,6 +316,25 @@ void setup() {
   Serial.println("Setup starting");
   SetupTimer2For2Milli();
   SetupPinChangeInterrupts();
+
+#ifdef TEST_avr_ATmega168_pin_Mapping
+  /* Data Direction Register
+   * 0 = ingang
+   * 1 = uitgang
+   **/
+  status_LED_DDR|=(1<<status_LED_Pin);/* uitgang */
+  TOGGLE_IO_DDR |=(1<<TOGGLE_IO);/* uitgang */
+  SENSOR_DDR &=~(1<<SENSOR_0_PIN);/* ingang */
+  SENSOR_DDR &=~(1<<SENSOR_1_PIN);/* ingang */
+  SENSOR_DDR &=~(1<<SENSOR_2_PIN);/* ingang */
+  SENSOR_DDR &=~(1<<SENSOR_3_PIN);/* ingang */
+  SENSOR_DDR &=~(1<<BUTTON_PIN);  /* ingang */
+  /* Data Register (PORT)
+   * 0 = laag (uitgang) / tri-state (ingang)
+   * 1 = hoog (uitgang) / pull up (ingang)
+   **/
+  BUTTON_PIN_port|=(1<<BUTTON_PIN);/* pull up */
+#else
   pinMode(statusLEDPin, OUTPUT);
   pinMode(TOGGLE_IO, OUTPUT);
   pinMode(SENSOR_0_PIN, INPUT);
@@ -256,6 +343,7 @@ void setup() {
   pinMode(SENSOR_3_PIN, INPUT);
   pinMode(BUTTON_PIN, INPUT);
   digitalWrite(BUTTON_PIN, HIGH);
+#endif
   SetupPinChangeLogic();
   Serial.println("Setup Complete, Starting Interrupts");
   sei();
@@ -289,8 +377,13 @@ void loop(void) {
 //Timer2 CTC (c)interrupt vector handler
 /////////////////////////////////////////////////////////////////////////////////////////////
 ISR(TIMER2_COMPA_vect) {
-//Toggle the IO pin to the other state.  DEBUG
-  digitalWrite(TOGGLE_IO,!digitalRead(TOGGLE_IO));
+#ifdef TEST_avr_ATmega168_pin_Mapping
+    //Toggle the IO pin to the other state.  DEBUG
+    TOGGLE_IO_port ^= (1<<TOGGLE_IO);
+#else
+    //Toggle the IO pin to the other state.  DEBUG
+      digitalWrite(TOGGLE_IO,!digitalRead(TOGGLE_IO));
+#endif
 
 // Packet format is '!' + time + '@' + hexadecimal representation of tickstate for each 2 milliseconds.
 //
@@ -347,7 +440,14 @@ ISR(PCINT2_vect) {
   // We need to disable interrupts here to ensure that subsequent ticks are processed after this round
   // Cannot allow a change in state to screw up the process of checking versus previous states.
     cli();
-
+#ifdef TEST_avr_ATmega168_pin_Mapping
+    // Read each of the pins
+    val0=SENSOR_PIN&(0x01<<SENSOR_0_PIN);
+    val1=SENSOR_PIN&(0x01<<SENSOR_1_PIN);
+    val2=SENSOR_PIN&(0x01<<SENSOR_2_PIN);
+    val3=SENSOR_PIN&(0x01<<SENSOR_3_PIN);
+    buttonPinVal=SENSOR_PIN&(0x01<<BUTTON_PIN);
+#else
     // Read each of the pins
     // This should really be done in a faster way by reading the port once to minimize ISR execution time
     // but for whatever reason, the last attempt at doing that didn't work.
@@ -357,6 +457,7 @@ ISR(PCINT2_vect) {
     val2 = digitalRead(SENSOR_2_PIN);
     val3 = digitalRead(SENSOR_3_PIN);
     buttonPinVal = digitalRead(BUTTON_PIN);
+#endif
 
 // If the frame check interrupt hasn't yet dealt with a tickNow event, make sure you don't erase that tick
 // Since nobody will ever drive the sensor faster than 500Hz (250 actual ticks/second),
